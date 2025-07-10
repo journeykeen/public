@@ -1,0 +1,229 @@
+---
+title: "file management"
+output: html_document
+---
+
+This file is to demonstrate the comparability of macros from Stata in R. It is best to use paths from strings rather than changing directories; strings work for this purpose. The following is the equivalent of setting Stata global macros for *string inputs* (as opposed to "compiled inputs"):
+
+
+```{r setup, results = 'hide'} 
+  # 'hide' suppresses the output
+library(data.table) 
+library(dplyr)
+library(tidyr)
+
+base_path <- "C:/.../"
+knitr::opts_knit$set(root.dir = "C:/Users/journ/OneDrive/Desktop/")
+```
+
+In Stata it is frequent to have a uniform list of variables that we want to loop through and change, where the uniform naming allows us to use macros. 
+  Example:
+```  
+foreach i in a b c {
+  replace `i` = `i`/2
+}
+```
+where because we do not pass the 'i' as a string (with quotations " ") then it references the variable names or commands ("compiled inputs"). For something this simple we can just pass this through a subset of the data for this basic function:
+```{r}
+# Create a basic data frame for demonstration.
+df <- data.frame(
+  a = runif(3, 0, 1),
+  b = runif(3, 0, 2),
+  c = runif(3, 0, 3)
+)
+vars <- c("a", "b", "c")
+df[vars] <- df[vars]/2
+```
+But if basically the exact syntax is wanted then we can use the brackets ([[]]) operator to pass the strings in 'vars' as compiled inputs:
+```{r}
+  # (Assuming we already have 'vars' from above)
+for (var in vars) {
+  df[[var]] <- df[[var]]*2
+}
+```
+The same goes for easy functions of two variables, where we want to modify the variables in 'vars' by another one:
+```{r}
+d <- runif(3, -1, 1)
+df <- cbind(df, d)
+
+for (var in vars) {
+  df[[var]] <- df[[var]]*df$d # so just multiply by d
+}
+```
+The same is more complicated in compliance with dplyr, so with more complicated usages. Here we can use 'across':
+```{r}
+  # (Assuming 'd' exists and is merged to 'df' from above)
+df <- df %>%
+  mutate(
+    across(all_of(vars), ~ .x /2) # 'all_of' is crucial here as it passes through as var names
+      # mutates "across" vars the anonymous function ('~.x') dividing by 2
+  )
+
+df2 <- df %>%
+  mutate(
+    across(all_of(vars), ~.x + d) # "~f(.x)" is equivalent to "function(.x) f(.x)" 
+      # Since 'df' is already in the pipe, we just add it to each passed-through variable
+  )
+```
+We can create new variables from our list of variables we are mutating across rather than just replacing them if we use '.cols'. The following Stata code is mimicked by the .R code after:
+```
+local varnames "a b c"
+foreach var in `varnames' {
+  gen new_`var' = `var' + d
+}
+```
+```{r}
+df2 <- df %>%
+  mutate(
+    across(
+      .cols = all_of(vars),
+      .fns = ~.x + d,
+      .names = "new_{.col}" # "{.col}" passes through the col names from '.cols'
+    )
+  )
+# In the same dataframe the above as the same as this. We do have to create 'new_var' because inside "[[]]" we can only pass strings.
+for (var in vars) {
+  new_var <- paste0("new_", var)
+  df[[new_var]] <- df[[var]] + df$d
+}
+
+```
+In the above example the Stata-like format with loops is probably easiest, but with more complicated functions where using dplyr's 'mutate' it is better to use 'across' and specify our own functions.
+
+Below we construct two string variables that contain a mixture of numeric and non-numeric data. We want to reconstruct them (in new variables) so that if it is purely numeric then they get passed as such, and if not then we set it to NA. The trick is to use 'grepl', which searches for a "pattern" in the argument. Our "pattern" is any string entirely of numbers
+```{r}
+df <- data.frame(
+  a = c("1", "d"),
+  b = c("ad", "a2")
+)
+
+df <- df %>%
+  mutate(
+    across(
+      .cols = all_of(c("a", "b")),
+      .fns  = ~ {
+        vec <- integer(length(.x)) # create a vector of 0s for the .x col 
+        nums <- grepl("^[0-9]+$", .x) # returns 1s in indices where .x is only nums (0-9)
+        vec[nums] <- as.numeric(.x[nums]) # Change to numeric *only where .x is numeric*
+        vec[!nums] <- NA_character_ # and the other entries to NA
+        return(vec) # ...and return it
+      },
+      .names = "num_{.col}"
+    )
+  ) 
+```
+I'm not sure about how fast this is.
+
+Note that when using apply what is passed-through to the function, .x, is NOT each element! It is a vector that is the whole column. So, if we naively use 'ifelse' on .x, trying to return "as.numeric(.x)" when grepl==TRUE and 'NA_character_' when false R will throw warnings:
+```{r}
+df <- df %>% select(a, b) # assuming we have the df from the last chunk
+df <- df %>%
+  mutate(
+    across(
+      .cols = all_of(c("a", "b")),
+      .fns = ~ ifelse(grepl("^[0-9]+$", .x) == TRUE, as.numeric(.x), NA_character_),
+      .names = "num_{.col}"
+    )
+  )
+
+# This error is not thrown for a single character:
+x <- "A5"
+if (grepl("^[0-9]+$", x) == TRUE) {
+  x <- as.numeric(x)
+  print(x)
+} else{
+  print(NA_character_)
+}
+```
+
+
+In these they are all explicitly variables rather than expressions. For instance, in a "cleaning" function/program in Stata, if it accepts arguments like `filter_val' then that can be directly passed, or it might be a part of a conditional statement using `filter_condition'.
+```
+local filter_val "alkfdbjdf"
+drop if x == "`filter_val'"
+```
+```{r}
+df <- data.frame(
+  a = c("1", "d", "4"),
+  b = c("ad", "a2", "3")
+)
+
+filter_val <- 1
+df <- df %>%
+  filter(!(a==filter_val))
+
+# Append back the first row (now third)
+df <- rbind(df, c("1", "ad"))
+
+# And if the 'filter_cond' is unknown, we can also pass it through (though, with more complicated usage, we would want to check if it is acceptable first before proceeding); useful if we want to check what it is in a function:
+df <- data.frame(
+  speed = c(100, 150, 200),
+  weight = c(4, 2, 3)
+)
+
+filter_type <- "speed" # or "weight" 
+filter_val <- 130 # or x\in[2,4) for a "weight" filter
+if (filter_type == "speed") {
+  filter_cond <- expr(speed > !!filter_val)
+} else {
+  filter_cond <- expr(weight > !!filter_Cal)
+}
+
+df <- df %>%
+  filter(!!filter_cond)
+```
+We can go further and even pass the type of expression so we do not need to check. In the example above, maybe we want to pass "speed" and ">" or "weight" and "<=" as well as a value.
+```{r}
+library(rlang)
+df <- rbind(df, c(100, 4)) # add the row back
+
+cond_var <- "speed"
+cond_type <- ">"
+cond_val <- 130
+
+filter_cond <- call2(cond_type, sym(cond_var), cond_val) # note that we pass through the variable we condition on as 'sym()'
+df <- df %>%
+  filter(!!filter_cond)
+```
+For direct comparison with Stata, consider a loop through some variables and some basic manipulation. But, only on some variables do we check for something:
+```
+local varnames1 "a b c d"
+local varnames2 "e f g h"
+local i 1
+foreach var in `varnames1' {
+  local var2 = word `i' in `varnames2'
+  gen `var'_`var2' = . // default as ./NA
+  replace `var'_`var2' = `var' + `var2' if `var2' != "b"
+  
+  local i = `i'+1
+}
+// A better example is with a large list where the repeat, so when combining variables we use one in many different combinations
+```
+In R we can generalize this a bit. The following is completely overkill for this example, but it does show how we can pass different variable names and use them to create new variables as well as to filter based on them. It also uses a loop to compare to the Stata version, but we could use 'across()' like before with no loop. 
+```{r}
+df <- data.frame(
+  a = c(3,4,5),
+  b = c(2,5,8),
+  c = c(1,1,1)
+)
+
+gen <- function(df, variable1, variable2) {
+  var1 <- sym(variable1)
+  var2 <- sym(variable2)
+  new_var <- sym(paste0(variable1, "_", variable2)) # to create a mutate-able expression for "variable1_variable2"
+  df <- df %>%
+    mutate(
+      !!new_var := as.integer(case_when(
+        !!var1 == 3 ~ NA,
+        TRUE ~ !!var1+!!var2
+      ))
+    )
+  return(df)
+}
+
+varnames1 <- c("a", "b", "c")
+varnames2 <- c("a", "c", "c")
+for (i in seq(1, length(varnames1))) {
+  df <- gen(df, varnames1[i], varnames2[i])
+}
+```
