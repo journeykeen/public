@@ -13,7 +13,7 @@ library(dplyr)
 library(tidyr)
 
 base_path <- "C:/.../"
-knitr::opts_knit$set(root.dir = "C:/Users/journ/OneDrive/Desktop/")
+knitr::opts_knit$set(root.dir = "C:/.../")
 ```
 
 In Stata it is frequent to have a uniform list of variables that we want to loop through and change, where the uniform naming allows us to use macros. 
